@@ -38,6 +38,7 @@ import {
 import {
   callFixtureCleanup,
   callFixtureCleanupFrom,
+  callFixtureCleanups,
   getFixtureCleanupCount,
   TestFixtures,
 } from './fixture'
@@ -47,7 +48,7 @@ import {
   getBeforeHookCleanupCallback,
 } from './hooks'
 import { getFn, getHooks } from './map'
-import { createShuffleRandom, getAttemptSeed, startSeedAttempt } from './seed'
+import { createShuffleRandom, getAttemptSeed, runParallelHooks, startSeedAttempt } from './seed'
 import { addRunningTest, getRunningTests, setCurrentTest } from './test-state'
 import { partitionSuiteChildren } from './utils/suite'
 
@@ -156,7 +157,9 @@ async function callTestHooks(
 
   if (sequence === 'parallel') {
     try {
-      await Promise.all(hooks.map((fn) => limitMaxConcurrency(() => fn(test.context))))
+      await runParallelHooks(hooks.length, () =>
+        Promise.all(hooks.map((fn) => limitMaxConcurrency(() => fn(test.context)))),
+      )
     } catch (e) {
       failTask(test.result!, e, runner.config._diffOptions)
     }
@@ -208,7 +211,9 @@ async function callSuiteHook<T extends keyof SuiteHooks>(
   }
 
   if (sequence === 'parallel') {
-    const results = await Promise.allSettled(hooks.map((hook) => runHook(hook)))
+    const results = await runParallelHooks(hooks.length, () =>
+      Promise.allSettled(hooks.map((hook) => runHook(hook))),
+    )
     // hooks can reject with the same `signal.reason`
     const errors = new Set<unknown>()
     for (const result of results) {
@@ -538,13 +543,9 @@ async function callCleanupHooks(runner: VitestRunner, cleanups: unknown[]) {
   }
 
   if (sequence === 'parallel') {
-    await Promise.all(
-      cleanups.map(async (fn) => {
-        if (typeof fn !== 'function') {
-          return
-        }
-        await limitMaxConcurrency(() => fn())
-      }),
+    const fns = cleanups.filter((fn) => typeof fn === 'function')
+    await runParallelHooks(fns.length, () =>
+      Promise.all(fns.map((fn) => limitMaxConcurrency(() => fn()))),
     )
   } else {
     for (const fn of cleanups) {
@@ -953,8 +954,7 @@ async function runSuite(suite: Suite, runner: VitestRunner): Promise<void> {
               await $('suite.cleanup', () => callCleanupHooks(runner, beforeAllCleanups))
             }
             if (suite.file === suite) {
-              const contexts = TestFixtures.getFileContexts(suite.file)
-              await Promise.all(contexts.map((context) => callFixtureCleanup(context)))
+              await callFixtureCleanups(TestFixtures.getFileContexts(suite.file))
             }
           } catch (e) {
             failTask(suite.result!, e, runner.config._diffOptions)
@@ -1077,9 +1077,7 @@ export async function startTests(
 
   if (!workerRunners.has(runner)) {
     runner.onCleanupWorkerContext?.(async () => {
-      await Promise.all(
-        Array.from(TestFixtures.getWorkerContexts(), (context) => callFixtureCleanup(context)),
-      ).finally(() => {
+      await callFixtureCleanups(Array.from(TestFixtures.getWorkerContexts())).finally(() => {
         TestFixtures.clearDefinitions()
       })
     })

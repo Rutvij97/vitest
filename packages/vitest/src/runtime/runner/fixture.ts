@@ -1,7 +1,9 @@
+import type { FixtureRandom } from './seed'
 import type { File, FixtureFn, FixtureOptions, Suite, TestContext, VitestRunner } from './types'
 import { createDefer, filterOutComments, isObject, ordinal } from '@vitest/utils/helpers'
 import { FixtureAccessError, FixtureDependencyError, FixtureParseError } from './errors'
 import { getTestFixtures } from './map'
+import { createFixtureRandom, setFixtureRandom } from './seed'
 import { getCurrentSuite } from './suite'
 
 const FIXTURE_STACK_TRACE_KEY = Symbol.for('VITEST_FIXTURE_STACK_TRACE')
@@ -276,6 +278,11 @@ export async function callFixtureCleanup(context: object): Promise<void> {
   await runFixtureCleanups(cleanupFnArray)
 }
 
+// one context at a time, so that teardowns do not overlap and keep their order on every run
+export async function callFixtureCleanups(contexts: object[]): Promise<void> {
+  await runFixtureCleanups(contexts.map((context) => () => callFixtureCleanup(context)))
+}
+
 /**
  * Returns the current number of cleanup functions registered for the context.
  * This can be used as a checkpoint to later clean up only fixtures added after this point.
@@ -516,6 +523,7 @@ async function resolveScopeFixtureValue(
     fixture.name,
     fixture.scope === 'file' ? { ...workerContext, ...fileContext } : fixtureContext,
     cleanupFnFileArray,
+    createFixtureRandom(fixture, suite.file),
   )
     .then((value) => {
       fixtureContext[fixture.name] = value
@@ -533,6 +541,7 @@ async function resolveFixtureFunction(
   fixtureName: string,
   context: unknown,
   cleanupFnArray: (() => void | Promise<void>)[],
+  random?: FixtureRandom,
 ): Promise<unknown> {
   // wait for `use` call to extract fixture value
   const useFnArgPromise = createDefer()
@@ -542,7 +551,8 @@ async function resolveFixtureFunction(
       : undefined
   let isUseFnArgResolved = false
 
-  const fixtureReturn = fixtureFn(context, async (useFnArg: unknown) => {
+  const fixtureReturn = callFixture(random, fixtureFn, context, async (useFnArg: unknown) => {
+    setFixtureRandom(undefined)
     // extract `use` argument
     isUseFnArgResolved = true
     useFnArgPromise.resolve(useFnArg)
@@ -550,6 +560,7 @@ async function resolveFixtureFunction(
     // suspend fixture teardown by holding off `useReturnPromise` resolution until cleanup
     const useReturnPromise = createDefer<void>()
     cleanupFnArray.push(async () => {
+      setFixtureRandom(random)
       // start teardown by resolving `use` Promise
       useReturnPromise.resolve()
       // wait for finishing teardown
@@ -578,8 +589,25 @@ async function resolveFixtureFunction(
       // otherwise re-throw to avoid silencing error during cleanup
       throw e
     })
+    .finally(() => setFixtureRandom(undefined))
 
   return useFnArgPromise
+}
+
+// `vi.useFakeRandom` takes values from `random` while the code of the fixture runs
+function callFixture(
+  random: FixtureRandom | undefined,
+  fixtureFn: (context: unknown, useFn: (arg: unknown) => Promise<void>) => Promise<void>,
+  context: unknown,
+  useFn: (arg: unknown) => Promise<void>,
+): Promise<void> {
+  setFixtureRandom(random)
+  try {
+    return fixtureFn(context, useFn)
+  } catch (error) {
+    setFixtureRandom(undefined)
+    throw error
+  }
 }
 
 function resolveDeps(
