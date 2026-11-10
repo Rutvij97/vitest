@@ -16,6 +16,7 @@ const keys = [
   [['a', 'return'], 'rerun all tests'],
   ['r', 'rerun current pattern tests'],
   ['f', 'rerun only failed tests'],
+  ['l', 'rerun current pattern tests until a test fails'],
   ['u', 'update snapshot'],
   ['i', 'interactively review snapshot fails'],
   ['p', 'filter by a filename'],
@@ -78,6 +79,7 @@ export function registerConsoleShortcuts(
   stdout: NodeJS.WriteStream | Writable,
 ) {
   let latestFilename = ''
+  let rerunUntilFailureActive = false
 
   async function _keypressHandler(str: string, key: readline.Key) {
     // Cancel run and exit when ctrl-c or esc is pressed.
@@ -104,6 +106,18 @@ export function registerConsoleShortcuts(
     }
 
     const name = key?.name
+
+    // Any cancel key stops the "rerun until failure" loop. The current run is
+    // cancelled as well, the loop then exits once that run has settled.
+    if (rerunUntilFailureActive) {
+      if (name && cancelKeys.includes(name)) {
+        rerunUntilFailureActive = false
+        if (ctx.runningPromise) {
+          await ctx.cancelCurrentRun('keyboard-input')
+        }
+      }
+      return
+    }
 
     if (ctx.runningPromise) {
       if (name && cancelKeys.includes(name)) {
@@ -142,6 +156,10 @@ export function registerConsoleShortcuts(
     if (name === 'f') {
       return ctx.rerunFailed()
     }
+    // rerun current pattern tests until a test fails
+    if (name === 'l') {
+      return rerunUntilFailure()
+    }
     // change project filter
     if (name === 'w') {
       return inputProjectName()
@@ -158,6 +176,43 @@ export function registerConsoleShortcuts(
 
   async function keypressHandler(str: string, key: readline.Key) {
     await _keypressHandler(str, key)
+  }
+
+  /**
+   * Keep rerunning the current pattern tests until a test fails, an unhandled
+   * error is reported, the run is cancelled or Vitest is closing. Useful to
+   * reproduce (or confirm the fix of) a flaky test without pressing `r` by hand.
+   */
+  async function rerunUntilFailure() {
+    rerunUntilFailureActive = true
+    let runs = 0
+
+    try {
+      while (!ctx.closingPromise) {
+        runs++
+        await ctx.rerunFiles(undefined, `rerun until failure (run ${runs})`)
+
+        if (ctx.closingPromise) {
+          return
+        }
+
+        if (ctx.state.getCountOfFailedTests() > 0 || ctx.state.getUnhandledErrors().length > 0) {
+          ctx.logger.log(c.red(`\nTests failed on run ${runs} of "rerun until failure".\n`))
+          return
+        }
+
+        // stopped with a cancel key, either between runs or during one
+        if (!rerunUntilFailureActive || ctx.isCancelling) {
+          break
+        }
+      }
+
+      if (!ctx.closingPromise) {
+        ctx.logger.log(c.dim(`\nStopped "rerun until failure" after ${runs} run(s).\n`))
+      }
+    } finally {
+      rerunUntilFailureActive = false
+    }
   }
 
   async function reviewSnapshots() {

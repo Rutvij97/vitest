@@ -36,6 +36,8 @@ When you modify your source code or the test files, Vitest smartly searches the 
 
 Start Vitest with the `--standalone` flag to keep it running in the background. It won't run any tests until they change. Vitest will not run tests if the source code is changed until the test that imports the source has been run
 
+Press `h` in watch mode to list the available keyboard shortcuts. For example, `l` reruns the current tests over and over until one of them fails, which helps to reproduce a flaky test or to confirm that it is fixed; press `l` again (or any other shortcut) to stop the loop.
+
 ## Common Web Idioms Out-Of-The-Box
 
 Out-of-the-box ES Module / TypeScript / JSX support / PostCSS

@@ -162,3 +162,77 @@ test('cli filter as watch filename pattern', async () => {
   await vitest.waitForStdout('Filename pattern: math')
   await vitest.waitForStdout('1 passed')
 })
+
+describe('rerun until failure', () => {
+  test('reruns the tests until one of them fails', async () => {
+    const { vitest } = await runInlineTests(
+      {
+        'counter.txt': '0',
+        'flaky.test.ts': ts`
+          import { readFileSync, writeFileSync } from 'node:fs'
+          import { expect, test } from 'vitest'
+
+          const counter = new URL('./counter.txt', import.meta.url)
+
+          test('fails on the third run', () => {
+            const runs = Number(readFileSync(counter, 'utf-8')) + 1
+            writeFileSync(counter, String(runs))
+            expect(runs).toBeLessThan(3)
+          })
+        `,
+      },
+      { watch: true, fileParallelism: false },
+    )
+
+    await vitest.waitForStdout('Waiting for file changes...')
+    vitest.write('l')
+
+    await vitest.waitForStdout('rerun until failure (run 1)')
+    await vitest.waitForStdout('rerun until failure (run 2)')
+    await vitest.waitForStdout('Tests failed on run 2 of "rerun until failure".')
+
+    expect(vitest.stdout).not.toContain('rerun until failure (run 3)')
+    expect(vitest.stdout).toContain('1 failed')
+    expect(vitest.stdout).toContain('Tests failed. Watching for file changes...')
+  })
+
+  test('respects the current test name pattern', async () => {
+    const { vitest } = await runInlineTests(fixture, {
+      watch: true,
+      testNamePattern: 'sum',
+    })
+
+    await vitest.waitForStdout('Waiting for file changes...')
+    vitest.write('l')
+
+    await vitest.waitForStdout('rerun until failure (run 1)')
+    await vitest.waitForStdout('Test name pattern: /sum/')
+    await vitest.waitForStdout('rerun until failure (run 2)')
+
+    // stop the loop, which otherwise keeps running the passing tests
+    vitest.write('l')
+    await vitest.waitForStdout('Stopped "rerun until failure" after')
+  })
+
+  test('stops looping when the run is cancelled', async () => {
+    const { vitest } = await runInlineTests(fixture, { watch: true })
+
+    await vitest.waitForStdout('Waiting for file changes...')
+    vitest.write('l')
+
+    await vitest.waitForStdout('rerun until failure (run 1)')
+    vitest.write('c')
+
+    await vitest.waitForStdout('Stopped "rerun until failure" after')
+    vitest.resetOutput()
+
+    // give a would-be next iteration time to start
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    expect(vitest.stdout).not.toContain('rerun until failure')
+
+    // the shortcuts work again after the loop has been stopped
+    vitest.write('r')
+    await vitest.waitForStdout('RERUN')
+    await vitest.waitForStdout('2 passed')
+  })
+})
